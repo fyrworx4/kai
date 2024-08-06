@@ -146,10 +146,10 @@ def main():
         data = data.replace('vp_wide', vp_wide_name)
         data = data.replace('ct_wide', ct_wide_name)
         data = data.replace('s_wide', s_wide_name)
+        
+        with open("temp.cpp", "w+") as tempfile:
+            tempfile.write(data)
 
-    # Write data
-    with open("temp.cpp", "w+") as template:
-        template.write(data)
 
     # compile
     try:
