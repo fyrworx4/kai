@@ -5,14 +5,12 @@ import os
 import time
 import argparse
 
-
 def get_random_string():
     # With combination of lower and upper case
     length = random.randint(8, 15)
     result_str = ''.join(random.choice(string.ascii_letters) for i in range(length))
     # print random string
     return result_str
-
 
 def xor(data):
     
@@ -28,7 +26,6 @@ def xor(data):
 
     ciphertext = '{ 0x' + ', 0x'.join(hex(ord(x))[2:] for x in output_str) + ' };'
     return ciphertext, key
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -153,7 +150,7 @@ def main():
 
     # compile
     try:
-        os.system('x86_64-w64-mingw32-g++ -shared -o kai.dll temp.cpp -Wall')
+        os.system('x86_64-w64-mingw32-g++ -shared -o kai.dll temp.cpp -Wall -lpsapi -static-libgcc -static-libstdc++')
     except Exception as e:
         print(e)
 

